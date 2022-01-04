@@ -52,7 +52,6 @@
 
 ### newEpisode(scanId: list, viewpointId: list, heading: list, elevation: list)
 开始新的Episode。如果没有提供视点，随机初始化一个视点作为起点。
-这里的 list 对应一个 batch 中不同的 Envs。
 
 ***Params*** 
 
@@ -70,19 +69,110 @@
 
 `scanId` 使用哪个场景，例如 "2t7WUuJeko7"
 
-### getState() -> list[Viewpoint]
+### getState() -> list[SimState]
 返回当前批次的环境状态，包括RGB图像和可执行的动作。
 
 ### makeAction(index: list, heading: list, elevation: list)
-RL agent 将在这里对动作进行采样。可以根据结果状态的位置、偏航角、俯仰角等来确定特定于任务的奖励。
+RL agent 将在这里采样一个动作。可以根据结果状态的位置、偏航角、俯仰角等来确定特定于任务的奖励。
 
 ***Params***
 
-`index` 可执行动作的索引，由 getState()->navigableLocations 给出。
+`index` 一个 getState()->navigableLocations 中可执行动作的索引。
 
 `heading` 想要执行的偏航角变化*弧度*。
 
 `elevation` 想要执行的俯仰角变化*弧度*。
+
+具体的makeAction操作， 参考c++源码：
+
+```c++
+void Simulator::makeAction(const std::vector<unsigned int>& index,
+                           const std::vector<double>& heading,
+                           const std::vector<double>& elevation) {
+  processTimer.Start();
+  if (!initialized) {
+    std::stringstream msg;
+    msg << "MatterSim: newEpisode must be called before makeAction";
+    throw ste::runtime_error( msg.str() );
+  }
+  std::vector<double> newHeading;
+  std::vector<double> newElevation;
+  for (unsigned int i=0; i < states.size(); ++i){
+    auto state = states.at(i);
+    if (index.at(i) >= state->navigableLocations.size()) {
+      std::stringstream msg;
+      msg << "MatterSim: Invalid action index: " << index.at(i) << " in environment " << i << " of " << batchSize;
+      throw std::domain_error( msg.str() );
+      // 可以看出，对于每个env只输入一个navigableLocation index
+    }
+    state->location = state->navigableLocation[index.at(i)];	// 获取前往的viewpoint
+    state->location->rel_heading = 0.0;	// 到达新视点后，该视点对应于agent的相对位置都置零
+    state->location->rel_elevation = 0.0;
+    state->location->rel_distance = 0.0;
+    state->step += 1;
+    double h = heading.at(i);
+    double e = elevation.at(i);
+    if (discretizeViews) {
+      // 当离散化处理时，只考虑heading 和 elevation 参数的正负。
+      // 每次变化固定增量
+      if (h > 0.0) h = M_PI*2.0/headingCount;	
+      if (h < 0.0) h = -M_PI*2.0/headingCount;
+      if (e > 0.0) h = elevationIncrement;
+      if (e < 0.0) h = -elevationIncrement;
+    }
+    newHeading.push_back(state->heading + h);
+    newElevation.push_back(state->elevation + e);
+  }
+  setHeadingElevation(newHeading, newElevation);
+  populateNavigable();
+  if (renderingEnabled) {
+    renderScene();
+  }
+  processTimer.Stop();
+}
+
+void Simulator::setHeadingElevation(const std::vector<double>& heading,
+                                    const std::vector<double>& elevation) {
+  for (unsigned int i=0; i<states.size(; ++i)) {
+    auto state = states.at(i);
+    // Normalize, 将heading的弧度限定在[0, 2 * Pi]
+    state->heading = fmod(heading.at(i), M_PI*2.0);
+    while (state->heading < 0.0) {
+      // 绝对偏航角为正
+      state->heading += M_PI * 2.0;
+    }
+    if (discretizeViews) {
+      // 将偏航角转向最近的离散值
+      double headingIncrement = M_PI * 2.0 / headingCount;
+      int heading_step = std::lround(state->heading/headingIncrement);
+      if (heading_step == headingCount) heading_step = 0;
+      state->heading = (double)heading_step * headingIncrement;
+      // 将俯仰角转向最近的离散值（无视俯仰角范围限制）
+      state->elevation = elevation.at(i);
+      if (state->elevation < -elevationIncrement/2.0) {
+        // 位于图像的偏下部分, elevationIncrement=M_PI/6.0，即30度
+        // minElevation < elevation < -15度
+        state->elevation = -elevationIncrement;
+        state->viewIndex = heading_step;
+      } else if (state->elevation > elevationIncrement/2.0) {
+        // 位于图像偏上部分
+        // 15度 < elevation < maxElevation
+        state->elevation = elevationIncrement;
+        state->viewIndex = heading_step + 2 * headingCount;
+      } else {
+        // 位于图像中间部分
+        // -15度 < elevation < 15度
+        state->elevation = 0.0;
+        state->viewIndex = heading_step + headingCount;
+      }
+    } else {
+      state->elevation = std::max(std::min(elevatinon.at(i), maxElevation), minElevation);
+    }
+  }
+}
+```
+
+调用makeAction会让agent前往指定的视点，并在到达该视点后转动期望的角度。也就是说当agent到达新的视点后，偏航角和俯仰角会重新设定，action 包括 「新的视点，偏航角，俯仰角」。
 
 ### close()
 关闭环境并释放底层的纹理资源，OpenGL环境等。
@@ -93,7 +183,62 @@ RL agent 将在这里对动作进行采样。可以根据结果状态的位置�
 ### timingIngo() -> str
 返回一个格式化的计时字符串。
 
-## SimState
+## 5 <span id="pcl">批处理</span>
+
+ 参考c++的源码：
+
+```c++
+namespace mattersim {
+  ...
+	std::shared_ptr<Viewpoint> ViewpointPtr;
+  ste::shared_ptr<SimState> SimStatePtr;
+  ...
+}
+
+class Simulator {
+  ...
+  private:
+  	ste::vector<SimStatePtr> states;
+  ...
+}
+
+void Simulator::initialize() {
+  for (unsigned int i=0; i<batchSize; ++i) {
+    states.push_back(std::make_shared<SimState>());
+    ...
+  }
+}
+
+void Simulator::newEpisode(const std::vector<std::string>& scanId,
+                           const std::vector<std::string>& viewpointId,
+                           const std::vector<double>& heading,
+                           const std::vector<double>& elevation) {
+  ...
+  for (unsigned int i=0; i<states.size(); ++i) {
+    auto state = states.at(i);
+    state->step = 0;
+    state->scanId = scanId.at(i);
+    // 获取视点在navGraph中的索引
+    unsigned int ix = navGraph.index(state->scanId, viewpointId.at(i));
+    // 获取视点的3D坐标
+    glm::vec3 pos = navGraph.cameraPosition(state->scanId, ix);
+    Viewpoint v {
+      viewpointId.at(i),
+      ix,
+      pos[0], pos[1], pos[2],
+      0.0, 0.0, 0.0
+    };
+    state->location = std::make_shared<Viewpoint>(v);
+  }
+  ...
+}
+```
+
+初始化时会根据batchSize添加SimState， 通过上面的for循环可以看出，sim对每一个env会维护一个state。
+
+## 6 数据类型 
+
+### SimState
 
 模拟器返回的状态，包括
 
@@ -115,7 +260,7 @@ RL agent 将在这里对动作进行采样。可以根据结果状态的位置�
 
 `navigableLocations: list[Viewpoint]` 附近可导航位置的列表，表示状态相关的候选动作（可移动到的视点）。第 0 位永远是自身所在位置。剩下的视点通过到图像中心的角距离进行排序。
 
-## Viewpoint
+### ViewPoint
 
 `viewpointId: str` 视点标识
 

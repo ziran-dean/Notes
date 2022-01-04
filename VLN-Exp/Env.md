@@ -56,5 +56,5 @@ def newEpisodes(self, scanIds, viewpointIds, headings):
             self.sims[i].newEpisode([scanId], [viewpointId], [heading], [0])
 ```
 
-初始化batch中env的起点， 
+初始化batch中env的起点。
 
