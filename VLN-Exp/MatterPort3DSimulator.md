@@ -53,15 +53,21 @@
 ### newEpisode(scanId: list, viewpointId: list, heading: list, elevation: list)
 开始新的Episode。如果没有提供视点，随机初始化一个视点作为起点。
 这里的 list 对应一个 batch 中不同的 Envs。
+
 ***Params*** 
-`scanId` 使用哪个场景，例如 "2t7WUuJeko7"
+
+`scanId` 使用哪个场景，例如 "2t7WUuJeko7" 
+
 `viewpointId` 设置初始视点位置，例如 "cc34e9176bfe47ebb23c58c165203134"
+
 `heading` 以弧度设置 agent 的初始摄像机偏航角。z 轴朝上，偏航角和 y 轴相关，右为正，左为负。
+
 `elevation` 以弧度设置 agent 的初始摄像机俯仰角，以 x-y 平面为参考，向上为正，向下为负。
 。
 
 ### newRandomEpisode(scanId: list)
 开始新的Episode，随机初始化一个视点作为起点。
+
 `scanId` 使用哪个场景，例如 "2t7WUuJeko7"
 
 ### getState() -> list
@@ -69,9 +75,13 @@
 
 ### makeAction(index: list, heading: list, elevation: list)
 RL agent 将在这里对动作进行采样。可以根据结果状态的位置、偏航角、俯仰角等来确定特定于任务的奖励。
+
 ***Params***
+
 `index` 可执行动作的索引，由 getState()->navigableLocations 给出。
+
 `heading` 想要执行的偏航角变化*弧度*。
+
 `elevation` 想要执行的俯仰角变化*弧度*。
 
 ### close()
